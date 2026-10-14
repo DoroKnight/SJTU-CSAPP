@@ -762,6 +762,13 @@ class PageBuilder:
         code being compiled can be read in the room. Shown under the same live
         preview as the run button, and inert everywhere else.
 
+        ``command`` may be ``""`` when the block is there for its ``files``
+        alone: it then has nothing to run, and every target leaves out the run
+        button and the command line.
+
+        A file that slide text or a table cell mentions is named there instead,
+        ``[label](file:path)`` — see :mod:`lecturekit.filelinks`.
+
         ``bold`` is a list of 1-based line numbers into ``output`` that render
         bold, for the rows a long printout is shown for. The numbers count the
         output as every target shows it — leading and trailing blank lines are
