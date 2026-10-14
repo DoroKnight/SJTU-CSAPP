@@ -1,0 +1,7 @@
+.serena/
+.claude/
+.codex/
+.agent/
+.vscode/
+*.tmp
+
