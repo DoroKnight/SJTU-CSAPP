@@ -1,0 +1,342 @@
+# 声明：
+# 笨笨主播英语不怎么好，因此使用ChatGPT来帮我完善了我本来的自己写的解析，答案是我自己的炸弹
+# 的，不一定适用于所有人，但是思路是一样的，主播会在 Phase 后面附上我自己的原来的想法。
+
+# Notes:
+# This analysis follows the eight lines currently in answers.txt.
+# Addresses below are the link-time addresses shown by objdump for this bomb.
+# The executable is PIE, so live addresses in GDB include a load-address offset.
+# Assembly uses AT&T syntax: source first, destination second.
+# The answers were checked against static binary data and reconstructed logic;
+# the bomb itself was not executed during this analysis.
+
+# Phase 1:
+# Calls 'string_equal' at 0xcc8a with the user input in %rdi and the reference
+# string at 0xfd030 in %rsi. This helper returns 1 for equal strings.
+# Relevant instructions:
+#   0xcc79: lea ...(%rip),%rdx       # reference string at 0xfd030
+#   0xcc84: mov %rdx,%rsi
+#   0xcc8a: call string_equal
+#   0xcc8f: test %eax,%eax
+#   0xcc91: jne 0xcc98              # nonzero means success
+# The reference includes its capital C, hyphen, spaces, and final period.
+# Solution:
+Callee-saved registers come back unchanged.
+
+# 补充：
+# (gdb) disas phase_1 后会看见特殊的函数 `string_squal`，作用如其名，比较你的输入
+# 和标准的字符串，先检查 %rdi 和 %rsi 哪一个是你的输入字符串，然后再 `x/s $rsi` 即可
+# （主播没记错的话应该是 %rsi）
+
+# Phase 2:
+# Parses two 32-bit signed integers a and b using "%d %d".
+# The three requirements deliberately interpret the same bit patterns differently.
+# 1. Signed comparison: a < b.
+#   0xcce6: cmp %eax,%edx           # a - b, with edx=a and eax=b
+#   0xcce8: jl 0xccef              # signed less-than
+# 2. Unsigned comparison: (unsigned)b < (unsigned)a.
+#   0xccf7: cmp %edx,%eax           # b - a, with eax=b and edx=a
+#   0xccf9: jb 0xcd00              # unsigned below
+# 3. The 32-bit subtraction a-b must overflow as a signed operation, and its
+# wrapped result must equal 0x7fffb1e0.
+#   0xcd0c: sub %edx,%eax           # eax = a - b
+#   0xcd0e: seto %dl               # save the overflow flag OF
+#   0xcd17: cmpb $0,-0x15(%rbp)
+#   0xcd1b: jne 0xcd22             # requires OF=1
+#   0xcd22: cmpl $0x7fffb1e0,-0xc(%rbp)
+# For a=-20001 and b=2147483647:
+# - Signed: -20001 < 2147483647.
+# - Unsigned: a is 4294947295, so 2147483647 < 4294947295.
+# - Exact mathematical difference: -2147503648, below INT_MIN (-2147483648).
+# - Adding 2^32 gives 2147463648 = 0x7fffb1e0, the required 32-bit result.
+# This wrapping describes the machine instruction, not portable signed C arithmetic.
+# Solution:
+-20001 2147483647
+
+# 补充：
+# 这个没什么好说的，先判断输入的数字个数（根据库函数的返回值即可），重点是你在反汇编的时候会看见一个很奇怪的数字，和其相等才不会 BOMB！
+# 然后根据上方的指令，避免引爆炸弹即可
+
+# Phase 3:
+# Calls 'read_six_numbers' to parse six 32-bit integers into a stack array a[].
+# In that helper, sscanf's last two output pointers are passed on the stack:
+#   0xcd8e: push %r8               # &a[5]
+#   0xcd90: push %rdi              # &a[4]
+# The first element must be 2:
+#   0xcde0: mov -0x20(%rbp),%eax
+#   0xcde3: cmp $0x2,%eax
+# The loop index i runs from 1 through 5. Its body computes:
+#   0xcdfb: mov -0x20(%rbp,%rax,4),%ecx  # ecx = a[i]
+#   0xce07: mov -0x20(%rbp,%rax,4),%edx  # edx = a[i-1], after eax=i-1
+#   0xce0b: mov %edx,%eax
+#   0xce0d: add %eax,%eax                # 2*a[i-1]
+#   0xce0f: add %edx,%eax                # 3*a[i-1]
+#   0xce11: sub -0x24(%rbp),%eax         # 3*a[i-1] - i
+#   0xce14: cmp %eax,%ecx
+# Therefore a[0]=2 and a[i]=3*a[i-1]-i:
+# - a[1] = 3*2 - 1 = 5
+# - a[2] = 3*5 - 2 = 13
+# - a[3] = 3*13 - 3 = 36
+# - a[4] = 3*36 - 4 = 104
+# - a[5] = 3*104 - 5 = 307
+# Solution:
+2 5 13 36 104 307
+
+# 补充：
+# 和 phase_2 一样，也是确定数字个数（这个是通过函数名确定的），然后反推运算过程
+
+# Phase 4:
+# Parses two integers: a jump-table index and an expected result.
+# The unsigned 'jbe' at 0xce89 requires index in [0,7]; negative values also fail.
+# Initializes a local accumulator v to 100 at 0xce90.
+# The jump table at 0x138e60 contains eight 8-byte code addresses:
+#   index:  0       1       2       3       4       5       6       7
+#   entry:  0xceb2  0xceb9  0xceca  0xced1  0xced8  0xcedb  0xcee7  0xceee
+#   0xceab: mov (%rdx,%rax,1),%rax  # load table[index], with rdx=index*8
+#   0xceb0: jmp *%rax
+# These entries select a starting point in one sequence of operations.
+# Execution continues through all later operations; there is no break between them.
+# The input uses index=1, so it skips only the subtraction at 0xceb2.
+# Relevant instructions and intermediate values:
+#   0xceb9: mov -0xc(%rbp),%edx     # v starts at 100
+#   0xcebc: mov %edx,%eax
+#   0xcebe: shl $0x2,%eax          # 4*v
+#   0xcec1: add %edx,%eax          # 5*v
+#   0xcec3: add %eax,%eax          # 10*v
+#   0xcec5: add %edx,%eax          # 11*v = 1100
+#   0xcec7: mov %eax,-0xc(%rbp)
+#   0xceca: xorl $0x1f0,-0xc(%rbp) # 1100 XOR 496 = 1468
+#   0xced1: addl $0x38d,-0xc(%rbp) # 1468 + 909 = 2377
+#   0xced8: negl -0xc(%rbp)        # -2377
+#   0xcedb: mov -0xc(%rbp),%edx
+#   0xcede: mov %edx,%eax
+#   0xcee0: add %eax,%eax
+#   0xcee2: add %edx,%eax          # 3*(-2377) = -7131
+#   0xcee4: mov %eax,-0xc(%rbp)
+#   0xcee7: subl $0x102,-0xc(%rbp) # -7131 - 258 = -7389
+#   0xceee: xorl $0x55,-0xc(%rbp)  # -7389 XOR 85 = -7306
+# The last XOR operates on the 32-bit two's-complement representation:
+#   0xffffe323 XOR 0x00000055 = 0xffffe376 = -7306.
+# The comparison at 0xcef5 requires the second input to equal this final value.
+# Solution:
+1 -7306
+
+# 补充：
+# 这里主播的前面的数字是随便选的（我在试输入的时候第一个是 3 ，了解过程后就没再尝试，不知道可不可行）
+# 注意这里最好是通过试数来进行，理解过程后，通过最后的判定条件反推
+
+# Phase 5:
+# Parses two 64-bit integers n and k using "%ld %ld".
+# Checks n <= 20 and 0 <= k <= n, then calls fun_5(n,k).
+# In 'fun_5', the first argument n is saved at rbp-0x18 and k at rbp-0x20.
+# Base cases:
+#   0xcf27: cmpq $0,-0x20(%rbp)    # k == 0?
+#   0xcf2c: je 0xcf38
+#   0xcf32: cmp -0x18(%rbp),%rax   # k == n?
+#   0xcf36: jne 0xcf3f
+#   0xcf38: mov $0x1,%eax         # return 1 for either base case
+# Otherwise:
+#   0xcf55: call fun_5             # fun_5(n-1,k-1)
+#   0xcf5a: mov %rax,%rbx          # preserve the first result across the next call
+#   0xcf6f: call fun_5             # fun_5(n-1,k)
+#   0xcf74: add %rbx,%rax          # return their sum
+# This is Pascal's recurrence for the binomial coefficient:
+#   C(n,k) = C(n-1,k-1) + C(n-1,k), with C(n,0)=C(n,n)=1.
+# The caller requires:
+#   0xcffa: cmp $0x1923,%rax       # 0x1923 = 6435
+# For the supplied input:
+#   C(15,7) = (15*14*13*12*11*10*9)/(7*6*5*4*3*2*1) = 6435.
+# Solution:
+15 7
+
+# 补充：
+# 这里很明显是递归函数，因为 fun_5 自己递归调用自己了，最后的返回值是 1
+# 最后的递归返回表达式是 f(x-1, y-1) + f(x-1, y)
+# 返回条件是：x, y 任意一个为 0 或 x = y 了（输入要求 x >= y）
+# 很明显，这是一个 comb(x, y) 组合数函数
+
+# Phase 6:
+# Parses three 64-bit integers x, y, z, then passes them in unusual registers:
+#   0xd048: mov -0x8(%rbp),%rdi    # x
+#   0xd04c: mov -0x10(%rbp),%rdx   # y
+#   0xd050: mov -0x18(%rbp),%r9    # z
+#   0xd054: call fun_6
+# Do not assume the usual %rdi/%rsi/%rdx argument order for this helper.
+# 'fun_6' checks each input is strictly between 0 and 1000.
+# It also requires y < z < x:
+#   0xd099: cmp %r9,%rdx           # y - z
+#   0xd09c: jge 0xd0bb            # reject y >= z
+#   0xd09e: cmp %rdi,%r9          # z - x
+#   0xd0a1: jge 0xd0bb            # reject z >= x
+# Its calculation returns the result in %rcx:
+#   0xd0a3: lea (%rdi,%rdi,2),%rcx # rcx = 3*x
+#   0xd0a7: sub %rdx,%rcx          # rcx = 3*x - y
+#   0xd0aa: imul %r9,%rcx          # rcx = (3*x-y)*z
+#   0xd0ae: add %rdx,%rcx          # rcx = (3*x-y)*z + y
+# Success/failure is returned through the condition flags:
+#   0xd0b1: mov $1,%r11d
+#   0xd0b7: test %r11d,%r11d      # success: ZF=0
+#   0xd0ba: ret                    # ret preserves these flags
+#   0xd0bb: xor %r11d,%r11d       # failure: ZF=1
+# The caller checks both the flags and %rcx:
+#   0xd059: je 0xd06a             # explode if ZF=1
+#   0xd05b: cmp $0x1f4,%rcx       # require rcx=500
+# For x=20, y=5, z=9:
+# - 0 < 5 < 9 < 20 < 1000.
+# - (3*20-5)*9+5 = 55*9+5 = 500.
+# Solution:
+20 5 9
+
+# 补充：
+# 简单根据题目中的蛛丝马迹来进行判断
+# 已知最后的判断标准是最后的 500，所以要将最后的表达式凑成 500
+# 根据反汇编得到的 expr = (3 * x - y) * z + y
+# 配凑最后的表达式就可以了
+
+# Phase 7:
+# The input is a sequence of movement commands through an 8x8 maze.
+# Starts at row r=0, column c=0, stored at rbp-0x10 and rbp-0xc respectively.
+# The character comparisons use ASCII: W=0x57, S=0x53, A=0x41, D=0x44.
+#   0xd110: subl $1,-0x10(%rbp)   # W: r--
+#   0xd116: addl $1,-0x10(%rbp)   # S: r++
+#   0xd11c: subl $1,-0xc(%rbp)    # A: c--
+#   0xd122: addl $1,-0xc(%rbp)    # D: c++
+# Any other character fails. After EVERY move, both coordinates must be in [0,7].
+# The eight bytes at 'walls' (0xfd090) are:
+#   80 f6 87 0b 21 74 ee 00
+# Each byte represents one row, with bit c representing column c:
+#   0xd156: movzbl (%rax,%rdx,1),%eax # eax = walls[r]
+#   0xd15a: movzbl %al,%edx
+#   0xd15d: mov -0xc(%rbp),%eax
+#   0xd160: mov %eax,%ecx              # shift count = c
+#   0xd162: sar %cl,%edx               # walls[r] >> c
+#   0xd166: and $1,%eax                # keep bit c, after moving edx to eax
+#   0xd16b: je 0xd172                  # 0 means open; 1 means wall
+# Although the shift is SAR, the byte was zero-extended, so edx is nonnegative.
+# Column 0 is the LEAST significant bit. Ordinary binary notation shows it last.
+# For example, 0xf6=11110110 in bit7..bit0 order becomes .##.#### in column order.
+# Map (#=wall, .=open; columns 0..7 from left to right):
+#       01234567
+#   0   .......#
+#   1   .##.####
+#   2   ###....#
+#   3   ##.#....
+#   4   #....#..
+#   5   ..#.###.
+#   6   .###.###
+#   7   ........
+# At the end of the string, the comparisons at 0xd186 and 0xd18c require (7,7).
+# Grouping the supplied path makes it easier to follow:
+#   DDD | SS | D | SS | AAA | S | A | SS | DDDDDDD
+#   (0,0) -> (0,3) -> (2,3) -> (2,4) -> (4,4) -> (4,1)
+#         -> (5,1) -> (5,0) -> (7,0) -> (7,7)
+# Every intermediate square, including those between the grouped endpoints, is open.
+# Solution:
+DDDSSDSSAAASASSDDDDDDD
+
+# 补充：
+# 这里的地图我也是没招了，要注意你得出的 wall 是低位开始 & 的，所以你的地图要从右向左恢复
+# 成一个正确的 map：
+# 完整地图：
+# 0 0 0 0 0 0 0 1
+# 0 1 1 0 1 1 1 1
+# 1 1 1 0 0 0 0 1
+# 1 1 0 1 0 0 0 0
+# 1 0 0 0 0 1 0 0 
+# 0 0 1 0 1 1 1 0
+# 0 1 1 1 0 1 1 1
+# 0 0 0 0 0 0 0 0
+# 最后要求从左上角走到右下角
+
+# Phase 8:
+# Parses three 64-bit integers x, y, z using "%ld %ld %ld".
+# Implements a small interpreter with four 64-bit registers R0..R3.
+# The state base is rbp-0x50 in phase_8:
+#   +0x00/+0x08/+0x10/+0x18: R0/R1/R2/R3, initially zero
+#   +0x20/+0x28/+0x30:       x/y/z
+#   +0x38:                  32-bit instruction index pc, initially zero
+#   +0x3c:                  32-bit completion flag done, initially zero
+# Each op function has its OWN stack frame; its rbp offsets differ from phase_8's.
+#
+# Fetches one 16-bit instruction from 'program' at 0xfd0a0, then advances pc:
+#   0xd444: mov -0x18(%rbp),%eax    # old pc
+#   0xd447: lea 1(%rax),%edx
+#   0xd44a: mov %edx,-0x18(%rbp)   # pc = old pc + 1
+#   0xd44f: lea (%rax,%rax,1),%rdx # byte offset = old pc * 2
+#   0xd453: lea ...(%rip),%rax     # program base
+#   0xd45a: movzwl (%rdx,%rax,1),%eax
+# The shifts and masks at 0xd462..0xd499 decode the instruction as:
+#   op  = inst & 0xf;             # low four bits
+#   a   = (inst >> 6) & 3;        # bits 7..6
+#   b   = (inst >> 4) & 3;        # bits 5..4
+#   imm = (int8_t)(inst >> 8);    # signed high byte
+# In particular, 'movsbl %al,%eax' at 0xd496 sign-extends imm.
+#
+# Uses the function-pointer table at 0x138ea0:
+#   0xd4bb: mov (%rdx,%rax,1),%r8  # op_table[op], with rdx=op*8
+#   0xd4bf: mov -0x54(%rbp),%ecx  # fourth argument: imm
+#   0xd4c2: mov -0x58(%rbp),%edx  # third argument: b
+#   0xd4c5: mov -0x5c(%rbp),%esi  # second argument: a
+#   0xd4c8: lea -0x50(%rbp),%rax
+#   0xd4cc: mov %rax,%rdi          # first argument: state
+#   0xd4cf: call *%r8             # op_table[op](state,a,b,imm)
+# Operation meanings, reconstructed from each helper:
+#   op_0 (0xd19a): R[a] = imm;       # store at 0xd1bb
+#   op_1 (0xd1c2): R[a] += R[b];     # add at 0xd1ef
+#   op_2 (0xd203): R[a] *= R[b];     # imul at 0xd233
+#   op_3 (0xd248): R[a] ^= R[b];     # xor at 0xd275
+#   op_4 (0xd289): require R[a]==0; done=1;
+#   op_5 (0xd2c4): R[a] = input[imm]; # requires 0 <= imm <= 2
+#   op_6 (0xd30d): R[a] -= R[b];     # sub at 0xd33a
+#   op_7 (0xd34e): if (R[a]!=0) pc += imm;
+# In op_5, 'add $4,%rdx' at 0xd2f4 selects state[(imm+4)*8], which is x/y/z.
+# In op_7, 0xd376 reads pc and 0xd37c adds imm to the ALREADY advanced pc.
+#
+# Decode program as 16-bit little-endian values (e.g., bytes 45 01 mean 0x0145):
+#   pc   inst     decoded operation
+#    0   0x0005   R0 = x
+#    1   0x0145   R1 = y
+#    2   0x0080   R2 = 0
+#    3   0x01c0   R3 = 1
+#    4   0x0091   R2 += R1
+#    5   0x0036   R0 -= R3
+#    6   0xfd07   if R0!=0: pc += -3    # next pc=7, target=4
+#    7   0x7700   R0 = 119
+#    8   0x0086   R2 -= R0
+#    9   0x0d87   if R2!=0: pc += 13    # next pc=10, target=23
+#   10   0x0005   R0 = x
+#   11   0x0046   R1 -= R0
+#   12   0x0a00   R0 = 10
+#   13   0x0046   R1 -= R0
+#   14   0x0847   if R1!=0: pc += 8     # next pc=15, target=23
+#   15   0x00c5   R3 = x
+#   16   0x00f2   R3 *= R3
+#   17   0x0145   R1 = y
+#   18   0x0052   R1 *= R1
+#   19   0x00d1   R3 += R1
+#   20   0x0285   R2 = z
+#   21   0x00b6   R2 -= R3
+#   22   0x0084   require R2==0; done=1
+#   23   0x0100   R0 = 1
+#   24   0x0004   require R0==0; done=1  # guaranteed failure after pc=23
+#
+# There are three checks:
+# 1. Instructions 4..6 add y to R2 and subtract 1 from R0 until R0 becomes zero.
+#    The high byte 0xfd means -3 (253-256), so the branch returns to instruction 4.
+#    With positive x, the loop runs x times and computes R2=x*y.
+#    Instructions 7..9 require x*y-119=0, otherwise execution jumps to failure.
+# 2. R1 still contains y. Instructions 10..14 require y-x-10=0.
+#    Combining the first two checks:
+#      x*(x+10)=119 -> x^2+10*x-119=0 -> (x-7)*(x+17)=0.
+#    The negative root cannot finish the decrementing loop within the step limit.
+#    Therefore x=7 and y=17.
+# 3. Instructions 15..21 compute R2=z-(x*x+y*y).
+#    op_4 checks this value at 0xd2ac..0xd2b1, then sets done=1 at 0xd2ba.
+#    Therefore z=7*7+17*17=49+289=338.
+# The interpreter also rejects pc outside [0,24] and more than 1000 instructions.
+# This input reaches the successful halt after 41 interpreted instructions.
+# Solution:
+7 17 338
+
+# 补充：
+# 这个我这没找，慢慢看，然后灵光一现（doge
