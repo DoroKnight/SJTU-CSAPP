@@ -162,10 +162,12 @@ with lecture.section('第三部分：函数调用', id="part3") as s:
         ss.page("stack-random", body=pages.stack_random)
         ss.page("stack-random-range", body=pages.stack_random_range)
         ss.page("nop-sled", body=pages.nop_sled)
+        ss.page("canary-story", body=pages.canary_story)
         ss.page("canary", body=pages.canary)
         ss.page("canary-asm", body=pages.canary_asm)
         ss.page("nx-bit", body=pages.nx_bit)
         ss.page("code-reuse", body=pages.code_reuse)
+        ss.page("rop-demo", body=pages.rop_demo)
         ss.page("shadow-stack", body=pages.shadow_stack)
 
 lecture.bridge('第四部分：数组与结构体', id="bridge-part4")
@@ -190,7 +192,6 @@ with lecture.section('第四部分：数组与结构体', id="part4") as s:
         ss.page("alignment-example", body=pages.alignment_example)
 
     with s.section('小结与练习', id="part4-summary") as ss:
-        ss.page("recap-part4", body=pages.recap_part4)
         ss.page("struct-exercise", body=pages.struct_exercise)
         ss.page("struct-exercise-2", body=pages.struct_exercise_2)
 
@@ -203,11 +204,11 @@ with lecture.section('第五部分：性能瓶颈与向量化——从标量计�
     s.page("measured-speed", body=pages.measured_speed)
     s.page("system-limits", body=pages.system_limits)
     s.page("insn-mix", body=pages.insn_mix)
+    s.page("insn-mix-2", body=pages.insn_mix_2)
     s.page("speedup-plan", body=pages.speedup_plan)
     s.bridge('SIMD 思想：数据并行', id="bridge-simd")
     with s.section('SIMD 思想：数据并行', id="part5-simd") as ss:
         ss.page("simd-history", body=pages.simd_history)
-        ss.page("simd-history-fig", body=pages.simd_history_fig)
         ss.page("ymm", body=pages.ymm)
         ss.page("vector-naming", body=pages.vector_naming)
         ss.page("vector-arith", body=pages.vector_arith)
@@ -215,7 +216,6 @@ with lecture.section('第五部分：性能瓶颈与向量化——从标量计�
         ss.page("intrinsics", body=pages.intrinsics)
         ss.page("vector-loop", body=pages.vector_loop)
         ss.page("perf", body=pages.perf)
-        ss.page("perf-2", body=pages.perf_2)
     s.bridge('SIMT 思想：线程并行', id="bridge-simt")
     with s.section('SIMT 思想：线程并行', id="part5-simt") as ss:
         ss.page("gpu-why", body=pages.gpu_why)
@@ -225,6 +225,7 @@ with lecture.section('第五部分：性能瓶颈与向量化——从标量计�
         ss.page("cuda-host", body=pages.cuda_host)
         ss.page("cuda-build", body=pages.cuda_build)
         ss.page("cuda-remote", body=pages.cuda_remote)
+        ss.page("softmax-exercise", body=pages.softmax_exercise)
 
 lecture.bridge('总结与实验任务', id="bridge-wrapup")
 
