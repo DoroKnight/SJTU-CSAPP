@@ -160,6 +160,36 @@ class KeyDerivationTest(unittest.TestCase):
 
         self.assertEqual(keys(build(body)), ["lecture.title", "intro.title"])
 
+    def test_translate_opts_one_code_block_into_the_overlay(self):
+        def body(p):
+            p.title("T")
+            p.code("c", "int x;")
+            p.code("pseudo", "b = 下一个字节", translate=True)
+
+        lecture = build(body)
+        # The unmarked block still takes a number, so the opted-in one is code.2.
+        self.assertEqual(
+            keys(lecture), ["lecture.title", "intro.title", "intro.code.2"]
+        )
+        applied = _apply_with(lecture, {"intro.code.2": "b = next byte"})
+        page = model.flatten_pages(applied.children)[0]
+        self.assertEqual(page.blocks[0].content["content"], "int x;")
+        self.assertEqual(page.blocks[1].content["content"], "b = next byte")
+        self.assertFalse(page.blocks[1].untranslated)
+
+    def test_a_listing_opted_in_is_one_entry_and_translates_whole(self):
+        def body(p):
+            p.title("T")
+            p.code("c", "x = 1;")
+            p.code("pseudo", "若 b 是前缀：\n    记下它", translate=True)
+
+        lecture = build(body)
+        self.assertEqual(keys(lecture), ["lecture.title", "intro.title", "intro.code.2"])
+        applied = _apply_with(lecture, {"intro.code.2": "if b is a prefix:\n    record it"})
+        blocks = model.flatten_pages(applied.children)[0].blocks
+        self.assertEqual(blocks[0].content["content"], "x = 1;")
+        self.assertEqual(blocks[1].content["content"], "if b is a prefix:\n    record it")
+
 
 class BlockKeyValidationTest(unittest.TestCase):
     def test_a_key_may_not_contain_a_dot(self):
