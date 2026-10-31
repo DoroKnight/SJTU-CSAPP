@@ -36,7 +36,7 @@ TONE = {                 # stage -> (fill, stroke, label colour)
     "请求 3": (FILL_GREEN, GREEN, GREEN),
     "请求 4": (FILL_GREY, INK, INK),
     "词 1": (FILL_BLUE, BLUE, BLUE),
-    "词 2": (FILL_ORANGE, ORANGE, ORANGE),
+    "词 2": (FILL_BLUE, BLUE, BLUE),
     "bubble": (WHITE, MUTED, MUTED),   # a GPU with nothing to compute, drawn like
                                        # the bubble of stall_bubble.py
 }
