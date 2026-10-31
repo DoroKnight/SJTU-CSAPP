@@ -49,8 +49,59 @@ int cond(uint64_t f, int cc)
      *   c l    SF != OF        d ge   SF == OF
      *   e le   ZF or SF != OF  f g    !ZF and SF == OF
      */
-    (void)f; (void)cc;
-    todo("cond");
+    int cf = !!(f & CF), pf = !!(f & PF), zf = !!(f & ZF),
+        sf = !!(f & SF), of = !!(f & OF), stat = 0;
+    switch(cc & 0xf) {
+        case 0x0:
+            stat = (of == 1);
+            break;
+        case 0x1:
+            stat = (of == 0);
+            break;
+        case 0x2:
+            stat = (cf == 1);
+            break;
+        case 0x3:
+            stat = (cf == 0);
+            break;
+        case 0x4:
+            stat = (zf == 1);
+            break;
+        case 0x5:
+            stat = (zf == 0);
+            break;
+        case 0x6:
+            stat = (cf == 1) || (zf == 1);
+            break;
+        case 0x7:
+            stat = (cf == 0) && (zf == 0);
+            break;
+        case 0x8:
+            stat = (sf == 1);
+            break;
+        case 0x9:
+            stat = (sf == 0);
+            break;
+        case 0xA:
+            stat = (pf == 1);
+            break;
+        case 0xB:
+            stat = (pf == 0);
+            break;
+        case 0xC:
+            stat = (sf != of);
+            break;
+        case 0xD:
+            stat = (sf == of);
+            break;
+        case 0xE:
+            stat = (zf == 1) || (sf != of);
+            break;
+        case 0xF:
+            stat = (zf == 0) && (sf == of);
+            break;
+    }
+    return stat;
 }
 
 void interp_run(mcpu *c)
@@ -195,6 +246,299 @@ void interp_run(mcpu *c)
             break;
 
         /* TODO: part 3, the other cases of the integer list above */
+        /* pop instruction */
+        case 0x58: case 0x59: case 0x5a: case 0x5b:
+        case 0x5c: case 0x5d: case 0x5e: case 0x5f:
+            unsigned code_pop = (op & 7) | ((x.rex & 1) << 3);
+            R[code_pop] = load(&x, R[RSP], 8);
+            if (code_pop != 4)  R[RSP] += 8;
+            break;
+
+        /* ret instruction */
+        case 0xc3:
+            R[RIP] = load(&x, R[RSP], 8);
+            R[RSP] += 8;
+            break;
+        
+        /* mov instruction */
+        case 0x89:
+            modrm(&x);
+            if (x.rm == -1) {
+                // rm is memory.
+                v = get(&x, x.reg);
+                rm_set(&x, v);
+            } else {
+                // rm is a register.
+                v = get(&x, x.reg);
+                set(&x, x.rm, v);
+            }
+            break;
+        case 0x8b:
+            modrm(&x);
+            if (x.rm == -1) {
+                // rm is memory.
+                v = rm_get(&x);
+                set(&x, x.reg, v);
+            } else {
+                v = get(&x, x.rm);
+                set(&x, x.reg, v);
+            }
+            break;
+
+        /* lea instruction */
+        case 0x8d:
+            modrm(&x);
+            v = ea(&x);
+            set(&x, x.reg, v);
+            break;
+        
+        /* alu instruction */
+        /* 1. add */
+        case 0x01: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op2 = get(&x, x.reg);
+            if (x.rm == -1) op1 = rm_get(&x);
+            else op1 = get(&x, x.rm);
+            v = x86_add(&R[RFLAGS], op1, op2, x.size, 0);
+            if (x.rm == -1) rm_set(&x, v);
+            else set(&x, x.rm, v);
+            break;
+        }
+        case 0x03: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op1 = get(&x, x.reg);
+            if (x.rm == -1) op2 = rm_get(&x);
+            else op2 = get(&x, x.rm);
+            v = x86_add(&R[RFLAGS], op1, op2, x.size, 0);
+            set(&x, x.reg, v);
+            break;
+        }
+    
+        /* 2. or */
+        case 0x09: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op1 = get(&x, x.reg);
+            if (x.rm == -1) op2 = rm_get(&x);
+            else op2 = get(&x, x.rm);
+            v = op1 | op2;
+            x86_logic(&R[RFLAGS], v, x.size);
+            if (x.rm == -1) rm_set(&x, v);
+            else set(&x, x.rm, v);
+            break;
+        }
+        case 0x0b: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op2 = get(&x, x.reg);
+            if (x.rm == -1) op1 = rm_get(&x);
+            else op1 = get(&x, x.rm);
+            v = op1 | op2;
+            x86_logic(&R[RFLAGS], v, x.size);
+            set(&x, x.reg, v);
+            break;
+        }
+        
+        /* 3.adc */
+        case 0x11: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op1 = get(&x, x.reg);
+            if (x.rm == -1) op2 = rm_get(&x);
+            else op2 = get(&x, x.rm);
+            v = x86_add(&R[RFLAGS], op1, op2, x.size, cond(R[RFLAGS], 2));
+            if (x.rm == -1) rm_set(&x, v);
+            else set(&x, x.rm, v);
+            break;
+        }
+        case 0x13: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op2 = get(&x, x.reg);
+            if (x.rm == -1) op1 = rm_get(&x);
+            else op1 = get(&x, x.rm);
+            v = x86_add(&R[RFLAGS], op1, op2, x.size, cond(R[RFLAGS], 2));
+            set(&x, x.reg, v);
+            break;
+        }
+
+        /* 4.sbb */
+        case 0x19: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op2 = get(&x, x.reg);
+            if (x.rm == -1) op1 = rm_get(&x);
+            else op1 = get(&x, x.rm);
+            v = x86_sub(&R[RFLAGS], op1, op2, x.size, cond(R[RFLAGS], 2));
+            if (x.rm == -1) rm_set(&x, v);
+            else set(&x, x.rm, v);
+            break;
+        }
+        case 0x1b: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op1 = get(&x, x.reg);
+            if (x.rm == -1) op2 = rm_get(&x);
+            else op2 = get(&x, x.rm);
+            v = x86_sub(&R[RFLAGS], op1, op2, x.size, cond(R[RFLAGS], 2));
+            set(&x, x.reg, v);
+            break;
+        }
+        
+        /* 5. and */
+        case 0x21: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op1 = get(&x, x.reg);
+            if (x.rm == -1) op2 = rm_get(&x);
+            else op2 = get(&x, x.rm);
+            v = op1 & op2;
+            x86_logic(&R[RFLAGS], v, x.size);
+            if (x.rm == -1) rm_set(&x, v);
+            else set(&x, x.rm, v);
+            break;
+        }
+        case 0x23: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op2 = get(&x, x.reg);
+            if (x.rm == -1) op1 = rm_get(&x);
+            else op1 = get(&x, x.rm);
+            v = op1 & op2;
+            x86_logic(&R[RFLAGS], v, x.size);
+            set(&x, x.reg, v);
+            break;
+        }
+
+        /* 6. sub */
+        case 0x29: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op2 = get(&x, x.reg);
+            if (x.rm == -1) op1 = rm_get(&x);
+            else op1 = get(&x, x.rm);
+            v = x86_sub(&R[RFLAGS], op1, op2, x.size, 0);
+            if (x.rm == -1) rm_set(&x, v);
+            else set(&x, x.rm, v);
+            break;
+        }
+        case 0x2b: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op1 = get(&x, x.reg);
+            if (x.rm == -1) op2 = rm_get(&x);
+            else op2 = get(&x, x.rm);
+            v = x86_sub(&R[RFLAGS], op1, op2, x.size, 0);
+            set(&x, x.reg, v);
+            break;
+        }
+        
+        /* 7. XOR */
+        case 0x31: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op1 = get(&x, x.reg);
+            if (x.rm == -1) op2 = rm_get(&x);
+            else op2 = get(&x, x.rm);
+            v = op1 ^ op2;
+            x86_logic(&R[RFLAGS], v, x.size);
+            if (x.rm == -1) rm_set(&x, v);
+            else set(&x, x.rm, v);
+            break;
+        }
+        case 0x33: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op2 = get(&x, x.reg);
+            if (x.rm == -1) op1 = rm_get(&x);
+            else op1 = get(&x, x.rm);
+            v = op1 ^ op2;
+            x86_logic(&R[RFLAGS], v, x.size);
+            set(&x, x.reg, v);
+            break;
+        }
+
+        /* 8.cmp */
+        case 0x39: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op2 = get(&x, x.reg);
+            if (x.rm == -1) op1 = rm_get(&x);
+            else op1 = get(&x, x.rm);
+            x86_sub(&R[RFLAGS], op1, op2, x.size, 0);
+            break;
+        }
+        case 0x3b: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op1 = get(&x, x.reg);
+            if (x.rm == -1) op2 = rm_get(&x);
+            else op2 = get(&x, x.rm);
+            x86_sub(&R[RFLAGS], op1, op2, x.size, 0);
+            break;
+        }
+        
+        /* 9. test */
+        case 0x85: {
+            modrm(&x);
+            uint64_t op1, op2;
+            op1 = get(&x, x.reg);
+            if (x.rm == -1) op2 = rm_get(&x);
+            else op2 = get(&x, x.rm);
+            v = op1 & op2;
+            x86_logic(&R[RFLAGS], v, x.size);
+            break;
+        }
+        
+        /*  mov Imm */
+        case 0xc7:
+            modrm(&x);
+            uint64_t imm1 = fetch_imm(&x);
+            if (x.rm == -1)
+                rm_set(&x, imm1);
+            else 
+                set(&x, x.rm, imm1);
+            break;
+        case 0xb8: case 0xb9: case 0xba: case 0xbb:
+        case 0xbc: case 0xbd: case 0xbe: case 0xbf:
+            uint64_t imm2 = (x.size == 8) 
+                           ? fetch64(&x) : fetch_imm(&x);
+            unsigned code_mov = (op & 7) | ((x.rex & 1) << 3);
+            set(&x, code_mov, imm2);
+            break;
+
+        /* call */
+        case 0xe8:
+            rel = (int32_t)fetch32(&x);
+            v = R[RIP];
+            store(&x, R[RSP] - 8, 8, v);
+            R[RSP] -= 8;
+            R[RIP] += rel;
+            break;
+        
+        /* jcc (1 byte) */
+        case 0x70: case 0x71: case 0x72: case 0x73:
+        case 0x74: case 0x75: case 0x76: case 0x77:
+        case 0x78: case 0x79: case 0x7a: case 0x7b:
+        case 0x7c: case 0x7d: case 0x7e: case 0x7f:
+        rel = (int8_t)fetch8(&x);
+        if (!cond(R[RFLAGS], op))  
+            break;
+        R[RIP] += rel;
+        break;
+
+        /* jcc (4 bytes) */
+        case 0x180: case 0x181: case 0x182: case 0x183:
+        case 0x184: case 0x185: case 0x186: case 0x187:
+        case 0x188: case 0x189: case 0x18a: case 0x18b:
+        case 0x18c: case 0x18d: case 0x18e: case 0x18f:
+        rel = (int32_t)fetch32(&x);
+        if (!cond(R[RFLAGS], op))  
+            break;
+        R[RIP] += rel;
+        break;
 
         /* vphaddd, xmm only: reg = { v0+v1, v2+v3, rm0+rm1, rm2+rm3 } */
         case 0x1202:
@@ -221,6 +565,51 @@ void interp_run(mcpu *c)
             break;
 
         /* TODO: part 4, the other five vector instructions */
+        /* vpxor */
+        case 0x11ef:
+            modrm(&x);
+            rm_vget(&x, &b, x.vlen);
+            for (int i = 0; i < 4; i++)
+                r.q[i] = Y[x.v].q[i] ^ b.q[i];
+            vset(&x, x.reg, &r, x.vlen);
+            break;
+        
+        /* vmovdqu */
+        case 0x116f:
+            modrm(&x);
+            rm_vget(&x, &b, x.vlen);
+            for (int i = 0; i < 4; i++) 
+                r.q[i] = b.q[i];
+            vset(&x, x.reg, &r, x.vlen);
+            break;
+
+        /* vpaddd */
+        case 0x11fe:
+            modrm(&x);
+            rm_vget(&x, &b, x.vlen);
+            a = Y[x.v];
+            memset(&r, 0, sizeof r);
+            for (int i = 0; i < x.vlen / 4; i++)
+                r.d[i] = Y[x.v].d[i] + b.d[i];
+            vset(&x, x.reg, &r, x.vlen);
+            break;
+        
+        /* vpmulld */
+        case 0x1240:
+            modrm(&x);
+            rm_vget(&x, &b, x.vlen);
+            a = Y[x.v];
+            memset(&r, 0, sizeof r);
+            for (int i = 0; i < x.vlen / 4; i++)
+                r.d[i] = Y[x.v].d[i] * b.d[i];
+            vset(&x, x.reg, &r, x.vlen);
+            break;
+
+        /* vmovd */
+        case 0x117e:
+            modrm(&x);
+            rm_set(&x, Y[x.reg].d[0]);
+            break;
 
         default:
             x86_other(&x);

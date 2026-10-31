@@ -48,8 +48,25 @@ uint64_t x86_szp(uint64_t f, uint64_t r, int size)
      *   r = 0x80     SF          (one bit set: odd parity)
      *   r = 0x03     PF
      */
-    (void)f; (void)r; (void)size;
-    todo("x86_szp");
+    uint64_t low_r = trunc_val(r, size);
+    // Set ZF:
+    if (low_r == 0) 
+        f = flag(f, ZF, 1);
+    else 
+        f = flag(f, ZF, 0);
+    // Set SF:
+    uint64_t mask = msb(size);
+    if ((low_r & mask) != 0)
+        f = flag(f, SF, 1);
+    else 
+        f = flag(f, SF, 0);
+    // Set PF:
+    if (parity(low_r) != 0)
+        f = flag(f, PF, 1);
+    else 
+        f = flag(f, PF, 0);
+    // Return the result.
+    return f;
 }
 
 uint64_t x86_logic(uint64_t *f, uint64_t r, int size)
@@ -57,8 +74,10 @@ uint64_t x86_logic(uint64_t *f, uint64_t r, int size)
     /* TODO: r is the result of and, or, xor or test. Set ZF, SF and PF
      * from it, clear CF and OF, and return r truncated to size bytes.
      */
-    (void)f; (void)r; (void)size;
-    todo("x86_logic");
+    *f = x86_szp(*f, r, size);
+    *f = flag(*f, CF, 0);
+    *f = flag(*f, OF, 0);
+    return trunc_val(r, size);
 }
 
 uint64_t x86_add(uint64_t *f, uint64_t a, uint64_t b, int size, int carry)
@@ -106,8 +125,22 @@ uint64_t x86_sub(uint64_t *f, uint64_t a, uint64_t b, int size, int borrow)
      * and with borrow 1:
      *   0x05 - 0xff = 0x05   CF PF
      */
-    (void)f; (void)a; (void)b; (void)size; (void)borrow;
-    todo("x86_sub");
+    uint64_t ta = trunc_val(a, size), tb = trunc_val(b, size);
+    uint64_t r = trunc_val(ta - tb - (uint64_t)borrow, size);
+    *f = x86_szp(*f, r, size);
+    // Set up CF and exclude the edge cases
+    if (tb == (uint64_t)(-1)) {
+        if (borrow != 0) *f = flag(*f, CF, 1);
+        else {
+            if (ta == (uint64_t)(-1)) *f = flag(*f, CF, 0);
+            else *f = flag(*f, CF, 1);
+        }
+    } else {
+        *f = flag(*f, CF, ta < (tb + borrow));
+    }
+    // Set up OF
+    *f = flag(*f, OF, ((ta ^ tb) & ~(r ^ tb) & msb(size)) != 0);
+    return r;
 }
 
 uint64_t x86_inc(uint64_t *f, uint64_t v, int size)
@@ -134,8 +167,10 @@ uint64_t x86_dec(uint64_t *f, uint64_t v, int size)
      *   0x00 - 1 = 0xff   SF PF, CF as before (sub would set it)
      *   0x80 - 1 = 0x7f   OF, CF as before
      */
-    (void)f; (void)v; (void)size;
-    todo("x86_dec");
+    uint64_t cf = *f & CF;
+    uint64_t r = x86_sub(f, v, 1, size, 0);
+    *f = (*f & ~(uint64_t)CF) | cf;
+    return r;
 }
 
 uint64_t x86_neg(uint64_t *f, uint64_t v, int size)
@@ -147,8 +182,8 @@ uint64_t x86_neg(uint64_t *f, uint64_t v, int size)
      *   0 - 0x00 = 0x00   ZF PF
      *   0 - 0x80 = 0x80   CF OF SF
      */
-    (void)f; (void)v; (void)size;
-    todo("x86_neg");
+    uint64_t r = x86_sub(f, 0, v, size, 0);
+    return r;
 }
 
 uint64_t x86_shift(uint64_t *f, int sub, uint64_t v, unsigned n, int size)
@@ -189,10 +224,22 @@ uint64_t x86_shift(uint64_t *f, int sub, uint64_t v, unsigned n, int size)
     switch (sub) {
     case 5:                                             /* shr */
         /* TODO: cf, r and of of shr, by the table of step 3 */
-        todo("shr in x86_shift");
+        v = trunc_val(v, size);
+        cf = ((v >> (n - 1)) & 1ULL) != 0;
+        of = (v & msb(size)) != 0;
+        v = v >> n;
+        r = trunc_val(v, size);
+        *f = x86_szp(*f, r, size);
+        break;
     case 7:                                             /* sar */
-        /* TODO: cf, r and of of sar, by the table of step 3 */
-        todo("sar in x86_shift");
+        /* TODO: cf, r and of of sar, by the table of step 3 */;
+        v = sext(v, size);
+        cf = ((v >> (n - 1)) & 1ULL) != 0;
+        of = 0;
+        v = (uint64_t)((int64_t)v >> n);
+        r = trunc_val(v, size);
+        *f = x86_szp(*f, r, size);
+        break;
     default:                                            /* shl, sal */
         cf = n <= bits ? (int)(v >> (bits - n)) & 1 : 0;
         r = trunc_val(v << n, size);
@@ -228,8 +275,44 @@ void x86_mul(uint64_t *f, int sub, uint64_t a, uint64_t b, int size,
      *   imul  0xff * 0x01 = 0xffff   lo 0xff, hi 0xff   SF PF      (-1 * 1 = -1)
      *   imul  0x40 * 0x02 = 0x0080   lo 0x80, hi 0x00   CF OF SF   (128 is not an int8_t)
      */
-    (void)f; (void)sub; (void)a; (void)b; (void)size; (void)lo; (void)hi;
-    todo("x86_mul");
+    if (sub == 4) {
+        uint64_t ta = trunc_val(a, size), tb = trunc_val(b, size);
+        if (size == 8) {
+            unsigned __int128 ea = (unsigned __int128) ta,
+                              eb = (unsigned __int128) tb;
+            unsigned __int128 res = ea * eb;
+            *lo = (uint64_t)res;
+            *hi = (uint64_t)(res >> 64);
+        } else {
+            uint64_t res = ta * tb;
+            *lo = trunc_val(res, size);
+            *hi = trunc_val((res >> (8 * size)), size);
+        }
+        *f = x86_szp(*f, *lo, size);
+        *f = flag(*f, CF, (*hi != 0));
+        *f = flag(*f, OF, (*hi != 0));
+    } else {
+        int64_t sa = sext(a, size), sb = sext(b, size);
+        if (size == 8) {
+            __int128 ea = (__int128) sa,
+                     eb = (__int128) sb;
+            __int128 res = ea * eb;
+            *lo = (int64_t)res;
+            *hi = (int64_t)(res >> 64);
+            int overflow = (__int128)(int64_t)*lo != res;
+            *f = flag(*f, CF, overflow);
+            *f = flag(*f, OF, overflow);
+        } else {
+            int64_t res = sa * sb;
+            *lo = sext(res, size);
+            *hi = sext((res >> (8 * size)), size);
+            *f = flag(*f, CF, (int64_t)*lo != res);
+            *f = flag(*f, OF, (int64_t)*lo != res);
+        }
+        *f = x86_szp(*f, *lo, size);
+        *lo = trunc_val(*lo, size);
+        *hi = trunc_val(*hi, size);
+    }
 }
 
 int x86_div(int sub, uint64_t hi, uint64_t lo, uint64_t v, int size,

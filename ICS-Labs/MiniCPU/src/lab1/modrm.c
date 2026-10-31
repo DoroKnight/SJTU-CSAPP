@@ -67,6 +67,245 @@ unsigned modrm_decode(const uint8_t *p, unsigned n, uint8_t rex, modrm_t *m)
      * Before reading a byte check that it is one of the n bytes at p;
      * return 0 if it is not.
      */
-    (void)p; (void)n; (void)rex; (void)m;
-    todo("modrm_decode");
+
+    // First, if n = 0, return 0 directly.
+    if (n == 0)
+        return 0;
+    // Calculate the number of efficient bytes.
+    unsigned byte_num = 0;
+    uint8_t ModRM = p[0];
+    uint8_t mod = ModRM >> 6, reg = (ModRM >> 3) & 0x7, rm = ModRM & 0x7;
+    uint8_t REX_R = (rex >> 2) & 0x1, REX_X = (rex >> 1) & 0x1, REX_B = rex & 0x1;
+    // Decide the mod.
+    if (mod == 0x3)
+    {
+        m->mod = mod, m->sub = reg;
+        m->reg = reg | (REX_R << 3);
+        m->rm = rm | (REX_B << 3);
+        m->base = m->index = -1;
+        m->scale = 1;
+        m->rip = m->dsize = m->disp = 0;
+        byte_num = 1;
+    }
+    else
+    {
+        if (rm == 4)
+        {
+            if (n <= 1)
+                return 0;
+            uint8_t SIB = p[1];
+            uint8_t scale = SIB >> 6, index = (SIB >> 3) & 0x7, base = SIB & 0x7;
+            switch (mod)
+            {
+                long data, mask;
+            case 0:
+                if (base == 0x5)
+                {
+                    if (n <= 5)
+                        return 0;
+                    m->base = -1, m->dsize = 4, m->rip = 0;
+                    m->dsize = 4;
+                    data = 0;
+                    unsigned int offset[4];
+                    for (int i = 0; i < 4; i++)
+                    {
+                        offset[i] = p[i + 2];
+                        data |= offset[i] << (8 * i);
+                    }
+                    mask = -((data >> 31) & 0x1);
+                    mask = mask >> 32 << 32;
+                    data |= mask;
+                    m->disp = data;
+                    byte_num = 6;
+                }
+                else
+                {
+                    m->base = base | (REX_B << 3), m->dsize = 0, m->rip = 0;
+                    m->disp = 0;
+                    byte_num = 2;
+                }
+                m->mod = mod, m->sub = reg, m->rm = -1;
+                m->reg = reg | (REX_R << 3);
+                if (index == 4 && REX_X == 0)
+                {
+                    m->index = -1;
+                    m->scale = 1;
+                }
+                else
+                {
+                    m->index = index | (REX_X << 3);
+                    m->scale = 1 << scale;
+                }
+                break;
+            case 1:
+                if (n <= 2)
+                    return 0;
+                m->base = base | (REX_B << 3);
+                m->rip = 0;
+                m->dsize = 1;
+                data = (char)p[2];
+                m->disp = data;
+                m->mod = mod, m->sub = reg, m->rm = -1;
+                m->reg = reg | (REX_R << 3);
+                if (index == 4 && REX_X == 0)
+                {
+                    m->index = -1;
+                    m->scale = 1;
+                }
+                else
+                {
+                    m->index = index | (REX_X << 3);
+                    m->scale = 1 << scale;
+                }
+                byte_num = 3;
+                break;
+            case 2:
+                if (n <= 5)
+                    return 0;
+                m->base = base | (REX_B << 3);
+                m->rip = 0;
+                m->dsize = 4;
+                data = 0;
+                unsigned int offset[4];
+                for (int i = 0; i < 4; i++)
+                {
+                    offset[i] = p[i + 2];
+                    data |= offset[i] << (8 * i);
+                }
+                mask = -((data >> 31) & 0x1);
+                mask = mask >> 32 << 32;
+                data |= mask;
+                m->disp = data;
+                m->mod = mod, m->sub = reg, m->rm = -1;
+                m->reg = reg | (REX_R << 3);
+                if (index == 4 && REX_X == 0)
+                {
+                    m->index = -1;
+                    m->scale = 1;
+                }
+                else
+                {
+                    m->index = index | (REX_X << 3);
+                    m->scale = 1 << scale;
+                }
+                byte_num = 6;
+                break;
+            }
+        }
+        else if (rm == 5)
+        {
+            unsigned int offset[4];
+            switch (mod)
+            {
+                long data, mask;
+            case 0:
+                if (n <= 4)
+                    return 0;
+                m->mod = mod, m->sub = reg, m->rm = -1;
+                m->reg = reg | (REX_R << 3);
+                m->base = -1, m->index = -1, m->scale = 1;
+                m->rip = 1;
+                m->dsize = 4;
+                data = 0;
+                for (int i = 0; i < 4; i++)
+                {
+                    offset[i] = p[i + 1];
+                    data |= offset[i] << (8 * i);
+                }
+                mask = -((data >> 31) & 0x1);
+                mask = mask >> 32 << 32;
+                data |= mask;
+                m->disp = data;
+                byte_num = 5;
+                break;
+            case 1:
+                if (n <= 1)
+                    return 0;
+                m->mod = mod, m->sub = reg, m->rm = -1;
+                m->reg = reg | (REX_R << 3);
+                m->base = rm | (REX_B << 3);
+                m->index = -1, m->scale = 1;
+                m->rip = 0;
+                m->dsize = 1;
+                data = (char)p[1];
+                m->disp = data;
+                byte_num = 2;
+                break;
+            case 2:
+                if (n <= 4)
+                    return 0;
+                m->mod = mod, m->sub = reg, m->rm = -1;
+                m->reg = reg | (REX_R << 3);
+                m->base = rm | (REX_B << 3);
+                m->index = -1, m->scale = 1;
+                m->rip = 0;
+                m->dsize = 4;
+                data = 0;
+                for (int i = 0; i < 4; i++)
+                {
+                    offset[i] = p[i + 1];
+                    data |= offset[i] << (8 * i);
+                }
+                mask = -((data >> 31) & 0x1);
+                mask = mask >> 32 << 32;
+                data |= mask;
+                m->disp = data;
+                byte_num = 5;
+                break;
+            }
+        }
+        else
+        {
+            switch (mod)
+            {
+                long data, mask;
+            case 0:
+                m->mod = mod, m->sub = reg, m->rm = -1;
+                m->reg = reg | (REX_R << 3);
+                m->base = rm | (REX_B << 3);
+                m->index = -1, m->scale = 1;
+                m->rip = 0;
+                m->dsize = 0;
+                m->disp = 0;
+                byte_num = 1;
+                break;
+            case 1:
+                if (n <= 1)
+                    return 0;
+                m->mod = mod, m->sub = reg, m->rm = -1;
+                m->reg = reg | (REX_R << 3);
+                m->base = rm | (REX_B << 3);
+                m->index = -1, m->scale = 1;
+                m->rip = 0;
+                m->dsize = 1;
+                data = (char)p[1];
+                m->disp = data;
+                byte_num = 2;
+                break;
+            case 2:
+                if (n <= 4)
+                    return 0;
+                m->mod = mod, m->sub = reg, m->rm = -1;
+                m->reg = reg | (REX_R << 3);
+                m->base = rm | (REX_B << 3);
+                m->index = -1, m->scale = 1;
+                m->rip = 0;
+                m->dsize = 4;
+                data = 0;
+                unsigned int offset[4];
+                for (int i = 0; i < 4; i++)
+                {
+                    offset[i] = p[i + 1];
+                    data |= offset[i] << (8 * i);
+                }
+                mask = -((data >> 31) & 0x1);
+                mask = mask >> 32 << 32;
+                data |= mask;
+                m->disp = data;
+                byte_num = 5;
+                break;
+            }
+        }
+    }
+    return byte_num;
 }
