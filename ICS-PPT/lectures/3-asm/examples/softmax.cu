@@ -26,17 +26,43 @@
 // 1. part[blockIdx.x] = the largest of the block's scores s[idx], idx < n
 __global__ void block_max(const float *s, float *part, int n) {
     // TODO
+    __shared__ float cache[256];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    cache[tid] = (idx < n) ? s[idx] : -INFINITY;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) cache[tid] = (cache[tid] < cache[tid + s]) ? cache[tid + s] : cache[tid];
+        __syncthreads();
+    }
+    if (tid == 0) part[blockIdx.x] = cache[0];
 }
 
 // 2. y[idx] = expf(s[idx] - max) for idx < n;
 //    part[blockIdx.x] = the sum of the block's y[idx]
 __global__ void exp_sum(float *y, const float *s, float max, float *part, int n) {
-    // TODO
+    __shared__ float cache[256];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    float value = 0.0f;
+    if (idx < n) {
+        value = expf(s[idx] - max);
+        y[idx] = value;
+    }
+    cache[tid] = value;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) cache[tid] += cache[tid + stride];
+        __syncthreads();
+    }
+    if (tid == 0) part[blockIdx.x] = cache[0];
 }
 
 // 3. y[idx] = y[idx] / sum for idx < n
 __global__ void divide(float *y, float sum, int n) {
     // TODO
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) y[idx] /= sum;
 }
 
 #define CHECK(call) do { cudaError_t e = (call); if (e != cudaSuccess) { \
