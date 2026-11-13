@@ -126,8 +126,52 @@ static inline __m256 exp8(__m256 x)
  * (hsum8). */
 static void matvec_q4_0(float *y, const uint8_t *w, const float *x, size_t rows, size_t cols)
 {
-    (void)y; (void)w; (void)x; (void)rows; (void)cols;
-    todo("matvec_q4_0");
+    const uint8_t *blk_ptr;
+    const float *x_ptr;
+    size_t blk_num = cols / Q4_0_BLOCK_WEIGHTS, r_size = blk_num * Q4_0_BLOCK_BYTES;
+    size_t r, b;
+    for (r = 0; r < rows; r++) {
+        float acc = 0;
+        for (b = 0; b < blk_num; b++) {
+            blk_ptr = w + r * r_size + b * Q4_0_BLOCK_BYTES;
+            x_ptr = x + b * 32;
+            __m128i bytes = _mm_loadu_si128((const __m128i *)(blk_ptr + 2));
+            const __m128i low4 = _mm_set1_epi8(15);     // set [0xF..0XF]
+            __m128i lo = _mm_and_si128(bytes, low4);    // get low 4 bits in each byte.
+            __m128i hi = _mm_and_si128(_mm_srli_epi16(bytes, 4), low4); // get high part.
+            // Begin decode
+            __m256i center = _mm256_set1_epi32(8);   // set [8, 8, ..., 8] (total 8)
+            // get weight 0~7
+            __m256i q0 = _mm256_cvtepu8_epi32(lo);   
+            __m256 v0 = _mm256_cvtepi32_ps(_mm256_sub_epi32(q0, center));
+            // get weight 8~15
+            __m256i q1 = _mm256_cvtepu8_epi32(_mm_srli_si128(lo, 8));   
+            __m256 v1 = _mm256_cvtepi32_ps(_mm256_sub_epi32(q1, center));
+            // get weight 16~23
+            __m256i q2 = _mm256_cvtepu8_epi32(hi);   
+            __m256 v2 = _mm256_cvtepi32_ps(_mm256_sub_epi32(q2, center));
+            // get weight 24~31
+            __m256i q3 = _mm256_cvtepu8_epi32(_mm_srli_si128(hi, 8));   
+            __m256 v3 = _mm256_cvtepi32_ps(_mm256_sub_epi32(q3, center));
+            // dot 0~7
+            __m256 t0 = _mm256_loadu_ps(x_ptr);
+            __m256 dot0 = _mm256_mul_ps(t0, v0);
+            // dot 8~15
+            __m256 t1 = _mm256_loadu_ps(x_ptr + 8);
+            __m256 dot1 = _mm256_mul_ps(t1, v1);
+            // dot 16~23
+            __m256 t2 = _mm256_loadu_ps(x_ptr + 16);
+            __m256 dot2 = _mm256_mul_ps(t2, v2);
+            // dot 24~31
+            __m256 t3 = _mm256_loadu_ps(x_ptr + 24);
+            __m256 dot3 = _mm256_mul_ps(t3, v3);
+            // accaculate all data and multiple d
+            __m256 dot = _mm256_add_ps(dot0, _mm256_add_ps(dot1, _mm256_add_ps(dot2, dot3)));
+            float d = q4_0_scale(blk_ptr);
+            acc += hsum8(dot) * d;
+        }
+        y[r] = acc;
+    }
 }
 
 /* Eight codes (the low 8 bytes of q) as the floats d * (q - 8). */

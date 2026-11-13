@@ -107,7 +107,30 @@ static unsigned blocks(size_t n, int threads)
  * warp then read adjacent bytes of the row. */
 __global__ void matvec_q4_0_kernel(float *y, const uint8_t *w, const float *x, int cols)
 {
-    todo("matvec_q4_0_kernel");
+    __shared__ float dot[THREADS];  // 分配共有内存，让所有线程的计算结果放在一起，各自结果互不影响
+    size_t r = blockIdx.x;  // 获得行号
+    size_t r_bytes = (size_t)(cols / Q4_0_BLOCK_WEIGHTS) * Q4_0_BLOCK_BYTES;    // 获得整行的字节
+    const uint8_t *row_head = w + r * r_bytes;    // 获得第 r 行的块的首地址
+    float sum = 0;  // 不同的线程有各自的部分和 sum，这里变量命名看不出来
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) {
+        int blk_idx = c / 32;
+        const uint8_t *blk_ptr = row_head + blk_idx * Q4_0_BLOCK_BYTES;
+        const uint8_t *w_ptr = blk_ptr + (2 + c % 16);
+        uint8_t code = (c % 32 < 16) ? (*w_ptr & 0xF) : ((*w_ptr >> 4) & 0xF);
+        float weight = q4_0_scale(blk_ptr) * (float)(code - 8);
+        sum += x[c] * weight;   // 线程 X 会计算自己的部分和，互相之间不影响
+    }
+    int t = threadIdx.x;
+    dot[t] = sum;
+    __syncthreads();
+    // 开始规约求和
+    for (int step = THREADS / 2; step > 0; step /= 2) {
+        if (t < step)   dot[t] += dot[t + step];
+        __syncthreads();
+    }
+    // 规约完毕，只需要写一次 dot[0]，让线程 0 来写就可以
+    if (t == 0)
+        y[r] = dot[0];
 }
 
 static void matvec_q4_0(float *y, const uint8_t *w, const float *x, size_t rows, size_t cols)
