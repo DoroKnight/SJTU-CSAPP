@@ -225,8 +225,7 @@ static unsigned cache_set_index(uint64_t pa)
      * cache_init has set cache_set_count to 1 or more before any access,
      * so the division is defined.
      */
-    (void)pa;
-    todo("cache_set_index");
+    return pa / LINE_SIZE % cache_set_count;
 }
 
 static uint64_t cache_tag(uint64_t pa)
@@ -239,8 +238,7 @@ static uint64_t cache_tag(uint64_t pa)
      * line. With 64 sets, 0x12345 has tag 0x12 and 0x13345 tag 0x13
      * (both have set index 13: they compete for the ways of set 13).
      */
-    (void)pa;
-    todo("cache_tag");
+    return (pa / LINE_SIZE) / cache_set_count;
 }
 
 static uint64_t cache_line_address(uint64_t tag, unsigned set_index)
@@ -256,8 +254,7 @@ static uint64_t cache_line_address(uint64_t tag, unsigned set_index)
      * cache_flush need this address to write a dirty line back to the
      * place in DRAM it came from, and cache_fill to read a new line.
      */
-    (void)tag; (void)set_index;
-    todo("cache_line_address");
+    return (tag * cache_set_count + set_index) * LINE_SIZE;
 }
 
 static cache_line *cache_lookup(unsigned set_index, uint64_t tag)
@@ -277,8 +274,14 @@ static cache_line *cache_lookup(unsigned set_index, uint64_t tag)
      * This function only searches: it changes no counter and no last_use.
      * cache_access decides what a hit or a miss does.
      */
-    (void)set_index; (void)tag;
-    todo("cache_lookup");
+    cache_line *set_line = cache_lines + set_index * cache_way_count;
+    // Check whether legal
+    for (unsigned way = 0; way < cache_way_count; way++) {
+        if (tag == (set_line + way)->tag)
+            return (set_line + way);   // Find it!
+    }
+    // No legal object.
+    return NULL;
 }
 
 static cache_line *cache_victim(unsigned set_index)
@@ -301,9 +304,23 @@ static cache_line *cache_victim(unsigned set_index)
      * This function only chooses: the victim may be dirty, and writing it
      * back is the work of cache_fill. No counter changes here.
      */
-    (void)set_index;
-    todo("cache_victim");
-}
+    cache_line *set_line = cache_lines + set_index * cache_way_count;
+    uint64_t last_use_time = set_line->last_use;
+    unsigned way_index = 0;
+    // If there is free way in this set
+    for (unsigned way = 0; way < cache_way_count; way++) {
+        if ((set_line + way)->last_use < last_use_time) {
+            // Note the last use way.
+            way_index = way;
+            last_use_time = (set_line + way)->last_use;
+        }
+        if ((set_line + way)->valid == 0) {
+            return (set_line + way);    // Find invalid way.
+        }
+    }
+    // No invalid way
+    return (set_line + way_index);
+}   
 
 static void cache_fill(cache_line *victim, unsigned set_index, uint64_t tag)
 {
@@ -326,8 +343,24 @@ static void cache_fill(cache_line *victim, unsigned set_index, uint64_t tag)
      *
      * cache_misses and last_use are left to cache_access.
      */
-    (void)victim; (void)set_index; (void)tag;
-    todo("cache_fill");
+    // If the victim is valid and dirty:
+    if (victim->valid == 1 && victim->dirty == 1) {
+        // Write back directly.
+        dram_line_write(
+            cache_line_address(victim->tag, set_index),
+            victim->data
+        );
+        cache_writebacks++;
+    }
+    // The line is clean or invaild, directly write it.
+    dram_line_read(
+        cache_line_address(tag, set_index),
+        victim->data
+    );
+    // Set the valid bit, dirty bit and tag
+    victim->valid = 1;
+    victim->dirty = 0;
+    victim->tag = tag;
 }
 
 static cache_line *cache_access(uint64_t pa)
@@ -350,8 +383,25 @@ static cache_line *cache_access(uint64_t pa)
      * line->dirty. Every call is one line access: a hit moves nothing, a
      * miss one or two lines.
      */
-    (void)pa;
-    todo("cache_access");
+    unsigned set_index = cache_set_index(pa);
+    uint64_t tag = cache_tag(pa);
+    cache_line *line = cache_lookup(set_index, tag);
+    // If hit, cache_hits plus 1.
+    if (line != NULL) {
+        cache_hits++;
+    }
+    // else, cache_misses plus 1 and call cache_victim and cache_fill to 
+    // load the memery. 
+    else {
+        cache_misses++;
+        line = cache_victim(set_index);
+        cache_fill(line, set_index, tag);
+    }
+    // Set the clock and last_use
+    cache_use_clock++;
+    line->last_use = cache_use_clock;
+    // Return the target line
+    return line;
 }
 
 void cache_read(uint64_t pa, void *dst, unsigned nbytes)
@@ -372,8 +422,8 @@ void cache_read(uint64_t pa, void *dst, unsigned nbytes)
      * A call is one line access: one hit or one miss. Reading changes no
      * dirty bit.
      */
-    (void)pa; (void)dst; (void)nbytes;
-    todo("cache_read");
+    cache_line *line = cache_access(pa);
+    memcpy(dst, (line->data + pa % LINE_SIZE), nbytes);
 }
 
 void cache_write(uint64_t pa, const void *src, unsigned nbytes)
@@ -389,8 +439,9 @@ void cache_write(uint64_t pa, const void *src, unsigned nbytes)
      *   2. Copy nbytes bytes from src to line->data + pa % LINE_SIZE and
      *      set line->dirty = 1. Nothing goes to DRAM now (write-back).
      */
-    (void)pa; (void)src; (void)nbytes;
-    todo("cache_write");
+    cache_line *line = cache_access(pa);
+    memcpy((void *)(line->data + pa % LINE_SIZE), src, nbytes);
+    line->dirty = 1;
 }
 
 void cache_flush(void)
@@ -406,5 +457,18 @@ void cache_flush(void)
      * program exits. Without it, what the program wrote last stays in the
      * cache and never reaches dram.img.
      */
-    todo("cache_flush");
+    for (unsigned Sidx = 0; Sidx < cache_set_count; Sidx++) {
+        cache_line *set_ptr = cache_lines + Sidx * cache_way_count;
+        for (unsigned Widx = 0; Widx < cache_way_count; Widx++) {
+            cache_line *way_ptr = set_ptr + Widx;
+            if (way_ptr->valid == 1 && way_ptr->dirty == 1) {
+                dram_line_write(
+                    cache_line_address(way_ptr->tag, Sidx),
+                    way_ptr->data
+                );
+                cache_writebacks++;
+                way_ptr->dirty = 0;
+            }
+        }
+    }
 }
