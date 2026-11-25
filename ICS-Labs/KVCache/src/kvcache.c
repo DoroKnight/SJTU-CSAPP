@@ -124,9 +124,14 @@ void compute(struct kv_cache *cache, int token, float *state)
  */
 size_t kv_block_bytes(const struct kv_cache *cache)
 {
-    (void)cache;
-    todo("kv_block_bytes");
-    return 0;
+    /**
+     * 这个 lab 按照 token 为单元分块，一个块中包含这个 token 在所有层中的 key
+     * 和 value，每一层有自己单独保留的 key 和 value，n 层就有 n 组。
+     * */ 
+    // Bytes of one layer: key + value
+    size_t nbytes = 2 * cache->kv_dim * sizeof(float);
+    // all layers construct the whole block
+    return nbytes * cache->n_layer;
 }
 
 /* The key of token tok in the layer: the address of the first of its
@@ -142,9 +147,12 @@ size_t kv_block_bytes(const struct kv_cache *cache)
  */
 float *kv_key(const struct kv_cache *cache, int layer, int tok)
 {
-    (void)cache; (void)layer; (void)tok;
-    todo("kv_key");
-    return NULL;
+    // 先找到 token 对应的块位置
+    size_t blk_size = kv_block_bytes(cache);
+    unsigned char* blk_pos = cache->base + tok * blk_size;
+    // 找到层内的 key
+    size_t offset = layer * (cache->kv_dim * sizeof(float) * 2);
+    return (float *)(blk_pos + offset);
 }
 
 /* The value of token tok in the layer: in the same block, right after the
@@ -154,9 +162,10 @@ float *kv_key(const struct kv_cache *cache, int layer, int tok)
  */
 float *kv_value(const struct kv_cache *cache, int layer, int tok)
 {
-    (void)cache; (void)layer; (void)tok;
-    todo("kv_value");
-    return NULL;
+    // 直接利用上面的函数直接算出来同组的 key 位置，加上一个偏移就可以了
+    float *key_pos = kv_key(cache, layer, tok);
+    size_t offset = cache->kv_dim;
+    return key_pos + offset;
 }
 
 /* The key and the value of token n_cached are in block n_cached, where
@@ -167,8 +176,7 @@ float *kv_value(const struct kv_cache *cache, int layer, int tok)
  */
 void kv_append(struct kv_cache *cache)
 {
-    (void)cache;
-    todo("kv_append");
+    cache->n_cached++;
 }
 
 /* Makes room for a turn: afterwards the conversation has a block for every
@@ -206,7 +214,17 @@ void kv_append(struct kv_cache *cache)
  */
 int kv_reserve(struct kv_cache *cache, int n_prompt, int max_answer)
 {
-    (void)cache; (void)n_prompt; (void)max_answer;
-    todo("kv_reserve");
-    return 0;
+    // 最后输出的 token 暂不进入缓存
+    int n_tokens = n_prompt + max_answer - 1;   
+    // 没有足够空间
+    if (cache->n_blocks < n_tokens) {
+        return 0;
+    }
+    // 有足够空间
+    if (cache->capacity >= n_tokens) {
+        return 1;
+    }
+    // n_token > capacity
+    cache->capacity = n_tokens;
+    return 1;
 }
